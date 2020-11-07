@@ -63,6 +63,8 @@ namespace LeagueBulkConvert.Conversion
                     if (!skin.Exists)
                         continue;
                     skin.Clean();
+                    if (!skin.HasIdle)
+                        loggingViewModel.AddLine("NO IDLE FOUND", 2);
                     try
                     {
                         skin.Save(viewModel, loggingViewModel);

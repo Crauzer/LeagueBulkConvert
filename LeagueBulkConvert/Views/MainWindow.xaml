@@ -14,7 +14,8 @@
         TextElement.FontWeight="Medium"
         TextElement.FontSize="14"
         SizeToContent="WidthAndHeight"
-        Title="League Bulk Convert">
+        Title="League Bulk Convert"
+        Closed="Window_Closed">
 
     <Window.DataContext>
         <local:MainWindowViewModel />

@@ -1,4 +1,5 @@
 ﻿using LeagueBulkConvert.ViewModels;
+using System;
 using System.Windows;
 
 namespace LeagueBulkConvert.Views
@@ -9,6 +10,11 @@ namespace LeagueBulkConvert.Views
         {
             InitializeComponent();
             DataContext = new MainWindowViewModel();
+        }
+
+        private void Window_Closed(object sender, EventArgs e)
+        {
+            Application.Current.Shutdown();
         }
     }
 }

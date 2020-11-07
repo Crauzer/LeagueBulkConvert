@@ -20,6 +20,8 @@ namespace LeagueBulkConvert.Conversion
 
         public bool Exists { get => File.Exists(Mesh); }
 
+        public bool HasIdle { get; set; } = false;
+
         public ulong MaterialHash { get; set; }
 
         public IList<Material> Materials { get; set; } = new List<Material>();
@@ -36,19 +38,27 @@ namespace LeagueBulkConvert.Conversion
 
         public void AddAnimations(string binPath, LoggingWindowViewModel viewModel)
         {
-            var binTree = new BinTree(binPath);
-            if (binTree.Objects.Count != 1)
-                throw new NotImplementedException();
-            var animations = (BinTreeMap)binTree.Objects[0].Properties.FirstOrDefault(p => p.NameHash == 1172382456); //mClipDataMap
-            if (animations == null)
-                return;
-            foreach (var keyValuePair in animations.Map)
+            if (HasIdle)
             {
-                var structure = (BinTreeStructure)keyValuePair.Value;
-                if (structure.MetaClassHash != 1540989414) //AtomicClipData
+
+            }
+            var binTree = new BinTree(binPath);
+            var animationsData = binTree.Objects.FirstOrDefault(o => o.MetaClassHash == 4126869447); //AnimationGraphData
+            if (animationsData == null)
+                return;
+            var clipData = (BinTreeMap)animationsData.Properties.FirstOrDefault(p => p.NameHash == 1172382456); //mClipDataMap
+            if (clipData == null)
+                return;
+            foreach (var keyValuePair in clipData.Map)
+            {
+                var hash = ((BinTreeHash)keyValuePair.Key).Value;
+                if (!Converter.HashTables["binhashes"].ContainsKey(hash))
                     continue;
-                var animationData = (BinTreeEmbedded)structure.Properties.FirstOrDefault(p => p.NameHash == 3030349134); //mAnimationResourceData
-                if (animationData == null)
+                var name = Converter.HashTables["binhashes"][hash];
+                var lowercase = name.ToLower();
+                if (!(lowercase == "idle1" || lowercase == "idle01" || lowercase == "idle_base" || lowercase == "idle01_base"))
+                    continue;
+                if (!TryGetAnimationData(clipData, (BinTreeStructure)keyValuePair.Value, out var animationData))
                     continue;
                 var pathProperty = (BinTreeString)animationData.Properties.FirstOrDefault(p => p.NameHash == 53080535); //mAnimationFilePath
                 if (pathProperty == null)
@@ -56,23 +66,16 @@ namespace LeagueBulkConvert.Conversion
                 var path = pathProperty.Value.ToString().ToLower().Replace('/', '\\');
                 if (!File.Exists(path))
                     continue;
-                var hash = ((BinTreeHash)keyValuePair.Key).Value;
-                string name;
-                if (Converter.HashTables["binhashes"].ContainsKey(hash))
-                    name = Converter.HashTables["binhashes"][hash];
-                else
-                    name = Path.GetFileNameWithoutExtension(path);
-                Animation animation;
                 try
                 {
-                    animation = new Animation(path);
+                    Animations.Add((name, new Animation(path)));
+                    HasIdle = true;
                 }
                 catch (Exception)
                 {
                     viewModel.AddLine($"Couldn't parse {path}", 2);
-                    continue;
                 }
-                Animations.Add((name, animation));
+                break;
             }
         }
 
@@ -95,6 +98,94 @@ namespace LeagueBulkConvert.Conversion
                 Materials.RemoveAt(i);
                 i--;
             }
+        }
+
+        private bool TryGetAnimationData(BinTreeMap map, BinTreeStructure structure, out BinTreeEmbedded animationData)
+        {
+            animationData = null;
+            switch (structure.MetaClassHash)
+            {
+                // Ideally, the animations are randomly played with the correct chances, but that isn't possible in glTF.
+                // It might be possible to randomise the order and join them together into a single animations, but that
+                // is not something I'm able to do.
+                case 1240774858: //SelectorClipData
+                    var selectorList = (BinTreeContainer)structure.Properties.FirstOrDefault(p => p.NameHash == 1361876261); //mSelectorPairDataList
+                    BinTreeEmbedded bestSelector = null;
+                    var highestProbability = 0f;
+                    foreach (BinTreeEmbedded selector in selectorList.Properties)
+                    {
+                        var probability = (BinTreeFloat)selector.Properties.FirstOrDefault(p => p.NameHash == 1674287183); //mProbability
+                        if (probability == null)
+                            continue;
+                        if (probability.Value > highestProbability)
+                        {
+                            bestSelector = selector;
+                            highestProbability = probability.Value;
+                        }
+                    }
+                    if (bestSelector == null)
+                        break;
+                    var clipName = (BinTreeHash)bestSelector.Properties.FirstOrDefault(p => p.NameHash == 3391849597); //mClipName
+                    if (clipName == null)
+                        break;
+                    KeyValuePair<BinTreeProperty, BinTreeProperty>? matchFromSelector = map.Map.FirstOrDefault(k => ((BinTreeHash)k.Key).Value == clipName.Value);
+                    if (matchFromSelector == null)
+                        break;
+                    TryGetAnimationData(map, (BinTreeStructure)matchFromSelector.Value.Value, out animationData);
+                    break;
+                case 1540989414: //AtomicClipData
+                    animationData = (BinTreeEmbedded)structure.Properties.FirstOrDefault(p => p.NameHash == 3030349134); //mAnimationResourceData
+                    break;
+                // Ideally, these animations are played in the correct sequence, but I'm definitely not good enough at C#
+                // to be able to do that. I'm not sure if it's possible in glTF if the animations are different framerates.
+                case 2368776128: //SequencerClipData
+                    var clips = (BinTreeContainer)structure.Properties.FirstOrDefault(p => p.NameHash == 126660569); //mClipNameList
+                    if (clips == null)
+                        break;
+                    IDictionary<uint, int> hashCount = new Dictionary<uint, int>(); 
+                    foreach (BinTreeHash clip in clips.Properties)
+                    {
+                        if (hashCount.ContainsKey(clip.Value))
+                            hashCount[clip.Value] += 1;
+                        else
+                            hashCount[clip.Value] = 1;
+                    }
+                    var list = hashCount.ToList();
+                    list.Sort((k1, k2) => k1.Value.CompareTo(k2.Value));
+                    KeyValuePair<BinTreeProperty, BinTreeProperty>? matchFromSequencer = map.Map.FirstOrDefault(k => ((BinTreeHash)k.Key).Value == list[^1].Key);
+                    if (matchFromSequencer == null)
+                        break;
+                    TryGetAnimationData(map, (BinTreeStructure)matchFromSequencer.Value.Value, out animationData);
+                    break;
+                case 559985644: //ParallelClipData
+                    break;
+                case 2394679778: //ConditionFloatClipData
+                case 4071811009: //ParametricClipData
+                    var parametricClips = (BinTreeContainer)structure.Properties.FirstOrDefault(p => p.NameHash == 784579174 || p.NameHash == 589950661); //mParametricPairDataList || mConditionFloatPairDataList
+                    if (parametricClips == null)
+                        break;
+                    BinTreeHash parametricClipName = null;
+                    foreach (BinTreeEmbedded clip in parametricClips.Properties)
+                    {
+                        if (clip.Properties.Count != 1)
+                            continue;
+                        parametricClipName = (BinTreeHash)clip.Properties.FirstOrDefault(p => p.NameHash == 3391849597); //mClipName
+                    }
+                    if (parametricClipName == null)
+                        break;
+                    KeyValuePair<BinTreeProperty, BinTreeProperty>? matchFromParametric = map.Map.FirstOrDefault(k => ((BinTreeHash)k.Key).Value == parametricClipName.Value);
+                    if (matchFromParametric == null)
+                        break;
+                    TryGetAnimationData(map, (BinTreeStructure)matchFromParametric.Value.Value, out animationData);
+                    break;
+                case 358669516: //ConditionBoolClipData
+                    break;
+                default:
+                    break;
+            }
+            if (animationData == null)
+                return false;
+            return true;
         }
 
         private void ParseBinTree(BinTree tree)
@@ -135,7 +226,6 @@ namespace LeagueBulkConvert.Conversion
                     foreach (var property in treeObject.Properties)
                         ParseBinTreeProperty(property);
                     break;
-                // the following code is kind of weird
                 case 4288492553: //StaticMaterialDef
                     if (treeObject.PathHash == MaterialHash)
                     {
